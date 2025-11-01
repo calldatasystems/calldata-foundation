@@ -1,0 +1,282 @@
+# CallData Foundation - Git Ignore File
+
+# ============================================================================
+# Terraform
+# ============================================================================
+
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Exclude all .tfvars files, which are likely to contain sensitive data
+*.tfvars
+*.tfvars.json
+
+# Ignore override files as they are usually used to override resources locally
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Ignore transient lock info files
+.terraform.tfstate.lock.info
+
+# Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
+*tfplan*
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
+# ============================================================================
+# Ansible
+# ============================================================================
+
+# Ansible retry files
+*.retry
+
+# Ansible vault password files
+.vault_pass
+.vault_password
+vault_pass.txt
+vault_password.txt
+
+# Ansible roles downloaded from Galaxy
+ansible/roles/external/
+ansible/roles/downloaded/
+
+# Ansible collections
+ansible/collections/
+
+# Encrypted files (keep tracked, but ignore decrypted versions)
+*_decrypted.yml
+*_decrypted.yaml
+
+# Ansible log files
+ansible.log
+*.log
+
+# Ansible fact cache
+ansible/facts/
+*.facts
+
+# ============================================================================
+# SSH Keys
+# ============================================================================
+
+# Private keys
+*.pem
+*.key
+*.ppk
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+
+# SSH config
+ssh_config
+
+# ============================================================================
+# AWS
+# ============================================================================
+
+# AWS credentials
+.aws/
+credentials
+config
+
+# AWS CLI cache
+.aws-cli-cache/
+
+# ============================================================================
+# Python
+# ============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+ansible-venv/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============================================================================
+# IDE & Editors
+# ============================================================================
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (PyCharm, IntelliJ, etc.)
+.idea/
+*.iml
+*.iws
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================================
+# Operating System
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+
+# ============================================================================
+# Project-Specific
+# ============================================================================
+
+# Generated inventory files from Terraform outputs
+ansible/inventories/*/hosts.yml
+ansible/inventories/*/terraform_outputs.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# ============================================================================
+# Secrets & Sensitive Data
+# ============================================================================
+
+# Generic secrets files
+secrets/
+secrets.yml
+secrets.yaml
+*.secret
+*.secrets
+
+# Certificates
+*.crt
+*.cer
+*.ca-bundle
+*.p12
+*.pfx
+
+# Passwords
+passwords.txt
+*password*
+
+# Tokens
+*.token
+.token
+
+# ============================================================================
+# CI/CD
+# ============================================================================
+
+# GitHub Actions local testing
+.github/workflows/*.local.yml
+
+# Test results
+test-results/
+coverage/
+.coverage
+
+# ============================================================================
+# Logs & Debugging
+# ============================================================================
+
+# All log files
+logs/
+*.log
+
+# Debug outputs
+debug/
+*.debug
+
+# ============================================================================
+# Documentation Build Artifacts
+# ============================================================================
+
+# MkDocs
+site/
+
+# Sphinx
+docs/_build/
+
+# ============================================================================
+# Keep These Files (Force Include)
+# ============================================================================
+
+# Example files should be committed
+!*.example
+!*.template
+!terraform/environments/*/terraform.tfvars.example
+!ansible/inventories/*/group_vars/*.example
+
+# Sample/example configurations
+!examples/
+!samples/
