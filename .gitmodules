@@ -1,0 +1,3 @@
+[submodule "wazo-ansible"]
+	path = wazo-ansible
+	url = https://github.com/wazo-platform/wazo-ansible.git
