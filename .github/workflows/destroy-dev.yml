@@ -1,0 +1,194 @@
+name: Destroy CallData Foundation Platform (Dev)
+
+on:
+  workflow_dispatch:  # Manual trigger only - don't destroy automatically!
+    inputs:
+      confirm_destroy:
+        description: 'Type "destroy" to confirm destruction of dev environment'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-2
+  TF_VERSION: 1.5.0
+
+jobs:
+  validate-destroy:
+    name: Validate Destroy Request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Confirmation
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "destroy" ]; then
+            echo "::error::You must type 'destroy' to confirm destruction!"
+            exit 1
+          fi
+          echo "✓ Destroy confirmation validated"
+
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    needs: validate-destroy
+
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve
+
+      - name: Clean up orphaned resources
+        run: |
+          echo "Performing post-destroy cleanup..."
+
+          # Step 1: Clean up instance profiles
+          for PROFILE_NAME in "calldata-foundation-dev-foundation-profile"; do
+            echo "Checking for instance profile: $PROFILE_NAME"
+
+            # Remove role from instance profile
+            for ROLE_NAME in "calldata-foundation-dev-foundation-ssm-role"; do
+              aws iam remove-role-from-instance-profile --instance-profile-name $PROFILE_NAME --role-name $ROLE_NAME 2>/dev/null || true
+            done
+
+            # Delete instance profile
+            aws iam delete-instance-profile --instance-profile-name $PROFILE_NAME 2>/dev/null || true
+          done
+
+          # Step 2: Clean up IAM roles
+          for ROLE_NAME in "calldata-foundation-dev-foundation-ssm-role"; do
+            echo "Checking for role: $ROLE_NAME"
+
+            # Delete inline role policies
+            aws iam list-role-policies --role-name $ROLE_NAME 2>/dev/null | \
+              jq -r '.PolicyNames[]' | \
+              xargs -I {} aws iam delete-role-policy --role-name $ROLE_NAME --policy-name {} 2>/dev/null || true
+
+            # Detach managed policies
+            aws iam list-attached-role-policies --role-name $ROLE_NAME 2>/dev/null | \
+              jq -r '.AttachedPolicies[].PolicyArn' | \
+              xargs -I {} aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn {} 2>/dev/null || true
+
+            # Delete the role
+            aws iam delete-role --role-name $ROLE_NAME 2>/dev/null || true
+          done
+
+          # Step 3: Release any remaining Elastic IPs
+          echo "Releasing Elastic IPs..."
+          aws ec2 describe-addresses --region ${{ env.AWS_REGION }} \
+            --filters "Name=tag:Project,Values=calldata-foundation" "Name=tag:Environment,Values=dev" \
+            --query 'Addresses[*].[AllocationId,AssociationId,PublicIp]' \
+            --output text | while read ALLOC_ID ASSOC_ID PUBLIC_IP; do
+            if [ ! -z "$ALLOC_ID" ]; then
+              echo "Found EIP: $PUBLIC_IP (Allocation: $ALLOC_ID)"
+
+              # Disassociate if still associated
+              if [ ! -z "$ASSOC_ID" ] && [ "$ASSOC_ID" != "None" ]; then
+                echo "Disassociating EIP: $ALLOC_ID"
+                aws ec2 disassociate-address --association-id $ASSOC_ID --region ${{ env.AWS_REGION }} 2>/dev/null || true
+                sleep 2
+              fi
+
+              # Release the EIP
+              echo "Releasing EIP: $ALLOC_ID ($PUBLIC_IP)"
+              aws ec2 release-address --allocation-id $ALLOC_ID --region ${{ env.AWS_REGION }} 2>/dev/null && echo "Released $PUBLIC_IP" || echo "Failed to release $PUBLIC_IP"
+            fi
+          done
+
+          # Step 4: Clean up S3 buckets
+          for BUCKET_NAME in "calldata-foundation-dev-ssm-logs"; do
+            echo "Checking for S3 bucket: $BUCKET_NAME"
+
+            if aws s3api head-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null; then
+              echo "Found bucket: $BUCKET_NAME, cleaning up..."
+
+              # Suspend versioning
+              aws s3api put-bucket-versioning \
+                --bucket $BUCKET_NAME \
+                --versioning-configuration Status=Suspended \
+                --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+              # Delete all object versions
+              aws s3api list-object-versions \
+                --bucket $BUCKET_NAME \
+                --region ${{ env.AWS_REGION }} \
+                --output json \
+                --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
+                jq -r '.Objects[]? | select(.Key != null) | "--key \(.Key) --version-id \(.VersionId)"' | \
+                xargs -I {} aws s3api delete-object --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} {} 2>/dev/null || true
+
+              # Delete all delete markers
+              aws s3api list-object-versions \
+                --bucket $BUCKET_NAME \
+                --region ${{ env.AWS_REGION }} \
+                --output json \
+                --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
+                jq -r '.Objects[]? | select(.Key != null) | "--key \(.Key) --version-id \(.VersionId)"' | \
+                xargs -I {} aws s3api delete-object --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} {} 2>/dev/null || true
+
+              # Empty any remaining objects
+              aws s3 rm s3://$BUCKET_NAME --recursive --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+              # Delete bucket
+              aws s3api delete-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null && echo "Deleted bucket: $BUCKET_NAME" || echo "Could not delete bucket: $BUCKET_NAME"
+            fi
+          done
+
+          # Step 5: Clean up security groups
+          echo "Checking for security groups..."
+          aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
+            --filters "Name=tag:Project,Values=calldata-foundation" "Name=tag:Environment,Values=dev" \
+            --query 'SecurityGroups[*].[GroupId,GroupName]' \
+            --output text | while read SG_ID SG_NAME; do
+            if [ ! -z "$SG_ID" ] && [ "$SG_NAME" != "default" ]; then
+              echo "Deleting security group: $SG_ID ($SG_NAME)"
+              aws ec2 delete-security-group --group-id $SG_ID --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Could not delete SG $SG_ID"
+            fi
+          done
+
+          echo "Cleanup completed"
+        continue-on-error: true
+
+  destroy-summary:
+    name: Destroy Summary
+    runs-on: ubuntu-latest
+    needs: terraform-destroy
+    if: always()
+
+    steps:
+      - name: Destroy Status
+        run: |
+          echo "=================================================="
+          echo "CallData Foundation Platform Destroy Summary"
+          echo "=================================================="
+          echo ""
+          echo "✓ Terraform Destroy: ${{ needs.terraform-destroy.result }}"
+          echo ""
+          if [ "${{ needs.terraform-destroy.result }}" = "success" ]; then
+            echo "✓ Dev environment has been destroyed successfully"
+          else
+            echo "✗ Destroy operation failed - check logs above"
+          fi
+          echo ""
+          echo "=================================================="

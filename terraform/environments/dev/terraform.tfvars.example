@@ -1,0 +1,14 @@
+# Example Terraform Variables for Dev Environment
+# Copy this file to terraform.tfvars and customize as needed
+
+# Note: Most configuration is set in main.tf locals block
+# This file is for any additional variables you want to override
+
+# Uncomment and modify these if you want to override defaults:
+
+# instance_type    = "t3.xlarge"
+# root_volume_size = 100
+
+# Security - restrict these in production:
+# sip_allowed_cidrs = ["203.0.113.0/24"]  # Your office/VPN IP range
+# rtp_allowed_cidrs = ["203.0.113.0/24"]  # Your office/VPN IP range

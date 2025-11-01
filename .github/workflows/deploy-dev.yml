@@ -1,0 +1,613 @@
+name: Deploy CallData Foundation Platform (Dev)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/environments/dev/**'
+      - 'terraform/modules/foundation-aio/**'
+      - 'wazo-ansible/**'
+      - '.github/workflows/deploy-dev.yml'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  AWS_REGION: us-east-2
+  TF_VERSION: 1.5.0
+  ANSIBLE_VERSION: 8.7.0
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    outputs:
+      tfplan_exitcode: ${{ steps.plan.outputs.exitcode }}
+
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # Initialize wazo-ansible submodule
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Clean up orphaned resources (if any)
+        run: |
+          # Clean up IAM resources from previous failed runs
+          echo "Checking for orphaned IAM resources..."
+
+          # Step 1: Clean up instance profiles FIRST (before roles)
+          for PROFILE_NAME in "calldata-foundation-dev-foundation-profile"; do
+            echo "Checking for instance profile: $PROFILE_NAME"
+
+            # Remove role from instance profile
+            for ROLE_NAME in "calldata-foundation-dev-foundation-ssm-role"; do
+              aws iam remove-role-from-instance-profile --instance-profile-name $PROFILE_NAME --role-name $ROLE_NAME 2>/dev/null || true
+            done
+
+            # Delete instance profile
+            aws iam delete-instance-profile --instance-profile-name $PROFILE_NAME 2>/dev/null || true
+          done
+
+          # Step 2: Clean up IAM roles (after instance profiles are removed)
+          for ROLE_NAME in "calldata-foundation-dev-foundation-ssm-role"; do
+            echo "Checking for role: $ROLE_NAME"
+
+            # Delete inline role policies first
+            aws iam list-role-policies --role-name $ROLE_NAME 2>/dev/null | \
+              jq -r '.PolicyNames[]' | \
+              xargs -I {} aws iam delete-role-policy --role-name $ROLE_NAME --policy-name {} 2>/dev/null || true
+
+            # Detach managed policies
+            aws iam list-attached-role-policies --role-name $ROLE_NAME 2>/dev/null | \
+              jq -r '.AttachedPolicies[].PolicyArn' | \
+              xargs -I {} aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn {} 2>/dev/null || true
+
+            # Delete the role
+            aws iam delete-role --role-name $ROLE_NAME 2>/dev/null || true
+          done
+
+          # Step 3: Clean up EC2 instances with EIPs
+          echo "Checking for orphaned EC2 instances..."
+          for INSTANCE_NAME in "calldata-foundation-dev-foundation"; do
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --region ${{ env.AWS_REGION }} \
+              --filters "Name=tag:Name,Values=$INSTANCE_NAME" "Name=instance-state-name,Values=running,stopped,stopping" \
+              --query 'Reservations[0].Instances[0].InstanceId' \
+              --output text 2>/dev/null || echo "")
+
+            if [ ! -z "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+              echo "Found orphaned instance: $INSTANCE_ID ($INSTANCE_NAME)"
+
+              # Disassociate and release any EIPs attached to this instance
+              aws ec2 describe-addresses --region ${{ env.AWS_REGION }} \
+                --filters "Name=instance-id,Values=$INSTANCE_ID" \
+                --query 'Addresses[*].[AssociationId,AllocationId]' \
+                --output text | while read ASSOC_ID ALLOC_ID; do
+                if [ ! -z "$ASSOC_ID" ]; then
+                  echo "Disassociating EIP: $ALLOC_ID from $INSTANCE_ID"
+                  aws ec2 disassociate-address --association-id $ASSOC_ID --region ${{ env.AWS_REGION }} 2>/dev/null || true
+                fi
+                if [ ! -z "$ALLOC_ID" ]; then
+                  echo "Releasing EIP: $ALLOC_ID"
+                  aws ec2 release-address --allocation-id $ALLOC_ID --region ${{ env.AWS_REGION }} 2>/dev/null || true
+                fi
+              done
+
+              # Terminate the instance
+              echo "Terminating instance: $INSTANCE_ID"
+              aws ec2 terminate-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+              # Wait for instance to terminate (max 60 seconds)
+              echo "Waiting for instance $INSTANCE_ID to terminate..."
+              for j in {1..12}; do
+                STATE=$(aws ec2 describe-instances \
+                  --instance-ids $INSTANCE_ID \
+                  --region ${{ env.AWS_REGION }} \
+                  --query 'Reservations[0].Instances[0].State.Name' \
+                  --output text 2>/dev/null || echo "terminated")
+
+                if [ "$STATE" = "terminated" ]; then
+                  echo "Instance $INSTANCE_ID terminated"
+                  break
+                fi
+                echo "Instance state: $STATE (waiting... $j/12)"
+                sleep 5
+              done
+            fi
+          done
+
+          # Step 4: Clean up S3 buckets
+          for BUCKET_NAME in "calldata-foundation-dev-ssm-logs"; do
+            echo "Checking for S3 bucket: $BUCKET_NAME"
+
+            # Check if bucket exists
+            if aws s3api head-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null; then
+              echo "Found bucket: $BUCKET_NAME, cleaning up..."
+
+              # Suspend versioning first
+              aws s3api put-bucket-versioning \
+                --bucket $BUCKET_NAME \
+                --versioning-configuration Status=Suspended \
+                --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+              # Delete all object versions
+              aws s3api list-object-versions \
+                --bucket $BUCKET_NAME \
+                --region ${{ env.AWS_REGION }} \
+                --output json \
+                --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
+                jq -r '.Objects[]? | select(.Key != null) | "--key \(.Key) --version-id \(.VersionId)"' | \
+                xargs -I {} aws s3api delete-object --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} {} 2>/dev/null || true
+
+              # Delete all delete markers
+              aws s3api list-object-versions \
+                --bucket $BUCKET_NAME \
+                --region ${{ env.AWS_REGION }} \
+                --output json \
+                --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null | \
+                jq -r '.Objects[]? | select(.Key != null) | "--key \(.Key) --version-id \(.VersionId)"' | \
+                xargs -I {} aws s3api delete-object --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} {} 2>/dev/null || true
+
+              # Empty any remaining objects
+              aws s3 rm s3://$BUCKET_NAME --recursive --region ${{ env.AWS_REGION }} 2>/dev/null || true
+
+              # Delete bucket
+              aws s3api delete-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null && echo "Deleted bucket: $BUCKET_NAME" || echo "Could not delete bucket: $BUCKET_NAME"
+            else
+              echo "Bucket does not exist: $BUCKET_NAME"
+            fi
+          done
+
+          echo "Cleanup completed"
+        continue-on-error: true
+
+      - name: Import existing S3 bucket if present
+        run: |
+          BUCKET_NAME="calldata-foundation-dev-ssm-logs"
+
+          # Check if bucket exists
+          if aws s3api head-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "Bucket $BUCKET_NAME exists, attempting to import into Terraform state..."
+
+            # Try to import the bucket (will fail if already in state, which is fine)
+            terraform import module.foundation.aws_s3_bucket.ssm_logs $BUCKET_NAME 2>&1 || echo "Bucket already in state or import failed, continuing..."
+
+            # Also try to import bucket versioning
+            terraform import module.foundation.aws_s3_bucket_versioning.ssm_logs $BUCKET_NAME 2>&1 || echo "Versioning already in state or import failed, continuing..."
+
+            # And public access block
+            terraform import module.foundation.aws_s3_bucket_public_access_block.ssm_logs $BUCKET_NAME 2>&1 || echo "Public access block already in state or import failed, continuing..."
+          else
+            echo "Bucket does not exist, Terraform will create it"
+          fi
+        continue-on-error: true
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -no-color -out=tfplan -detailed-exitcode
+          PLAN_EXIT=$?
+          echo "exitcode=${PLAN_EXIT}" >> $GITHUB_OUTPUT
+
+          if [ $PLAN_EXIT -eq 0 ] || [ $PLAN_EXIT -eq 2 ]; then
+            # Exit code 0 = no changes, 2 = changes present (both are success)
+            terraform show -no-color tfplan > plan.txt
+            exit 0
+          else
+            # Exit code 1 = error
+            echo "Terraform plan failed with exit code ${PLAN_EXIT}"
+            exit 1
+          fi
+        continue-on-error: false
+
+      - name: Upload Plan
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/environments/dev/tfplan
+          retention-days: 5
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('terraform/environments/dev/plan.txt', 'utf8');
+            const output = `#### Terraform Plan 📖
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`
+            ${plan}
+            \`\`\`
+
+            </details>
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (needs.terraform-plan.outputs.tfplan_exitcode == '0' || needs.terraform-plan.outputs.tfplan_exitcode == '2')
+
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    outputs:
+      foundation_ip: ${{ steps.output.outputs.foundation_ip }}
+      instance_id: ${{ steps.output.outputs.instance_id }}
+      ssm_bucket: ${{ steps.output.outputs.ssm_bucket }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Import existing S3 bucket if present
+        run: |
+          BUCKET_NAME="calldata-foundation-dev-ssm-logs"
+
+          # Check if bucket exists
+          if aws s3api head-bucket --bucket $BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "Bucket $BUCKET_NAME exists, attempting to import into Terraform state..."
+
+            # Try to import the bucket (will fail if already in state, which is fine)
+            terraform import module.foundation.aws_s3_bucket.ssm_logs $BUCKET_NAME 2>&1 || echo "Bucket already in state or import failed, continuing..."
+
+            # Also try to import bucket versioning
+            terraform import module.foundation.aws_s3_bucket_versioning.ssm_logs $BUCKET_NAME 2>&1 || echo "Versioning already in state or import failed, continuing..."
+
+            # And public access block
+            terraform import module.foundation.aws_s3_bucket_public_access_block.ssm_logs $BUCKET_NAME 2>&1 || echo "Public access block already in state or import failed, continuing..."
+          else
+            echo "Bucket does not exist, Terraform will create it"
+          fi
+        continue-on-error: true
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+
+      - name: Get Outputs
+        id: output
+        run: |
+          echo "foundation_ip=$(terraform output -raw foundation_public_ip)" >> $GITHUB_OUTPUT
+          echo "instance_id=$(terraform output -raw foundation_instance_id)" >> $GITHUB_OUTPUT
+          echo "ssm_bucket=$(terraform output -raw ssm_logs_bucket)" >> $GITHUB_OUTPUT
+          terraform output -json > outputs.json
+
+      - name: Upload Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: terraform/environments/dev/outputs.json
+          retention-days: 30
+
+      - name: Wait for Instance Ready
+        run: |
+          INSTANCE_ID=$(terraform output -raw foundation_instance_id)
+          echo "Waiting for instance $INSTANCE_ID to be ready..."
+          aws ec2 wait instance-status-ok --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+          echo "Instance is ready!"
+
+          # Additional wait for cloud-init to complete
+          echo "Waiting for cloud-init to complete (90 seconds)..."
+          sleep 90
+
+  ansible-deploy:
+    name: Deploy Foundation Platform with Ansible
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download Terraform Outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+          path: ./
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible==${{ env.ANSIBLE_VERSION }}
+          ansible --version
+
+      - name: Install Ansible Dependencies
+        run: |
+          pip install boto3 botocore
+          ansible-galaxy collection install community.general
+          ansible-galaxy collection install amazon.aws
+          # Install latest community.aws collection with SSM fixes
+          ansible-galaxy collection install community.aws:>=7.0.0
+
+          # Install AWS Session Manager plugin for SSM
+          curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+          sudo dpkg -i session-manager-plugin.deb
+
+      - name: Create Ansible Configuration
+        run: |
+          cat > wazo-ansible/ansible.cfg << EOF
+          [defaults]
+          host_key_checking = False
+          timeout = 60
+          remote_tmp = /tmp/.ansible-\${USER}/tmp
+
+          [ssh_connection]
+          ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=30
+          EOF
+
+      - name: Install Ansible PostgreSQL Requirements
+        run: |
+          ansible-galaxy install -r wazo-ansible/requirements-postgresql.yml
+
+      - name: Create Ansible Inventory
+        run: |
+          INSTANCE_ID="${{ needs.terraform-apply.outputs.instance_id }}"
+          SSM_BUCKET="${{ needs.terraform-apply.outputs.ssm_bucket }}"
+          mkdir -p wazo-ansible/inventories
+
+          cat > wazo-ansible/inventories/uc-engine << EOF
+          # CallData Foundation Platform - All-in-one deployment
+          # Single server with all UC components
+
+          [database]
+          foundation-dev ansible_host=${INSTANCE_ID} ansible_connection=community.aws.aws_ssm ansible_aws_ssm_region=us-east-2 ansible_aws_ssm_bucket_name=${SSM_BUCKET} ansible_python_interpreter=/usr/bin/python3 ansible_user=admin ansible_aws_ssm_timeout=60 ansible_aws_ssm_retries=5
+
+          [b2bua]
+          foundation-dev ansible_host=${INSTANCE_ID} ansible_connection=community.aws.aws_ssm ansible_aws_ssm_region=us-east-2 ansible_aws_ssm_bucket_name=${SSM_BUCKET} ansible_python_interpreter=/usr/bin/python3 ansible_user=admin ansible_aws_ssm_timeout=60 ansible_aws_ssm_retries=5
+
+          [engine_api]
+          foundation-dev ansible_host=${INSTANCE_ID} ansible_connection=community.aws.aws_ssm ansible_aws_ssm_region=us-east-2 ansible_aws_ssm_bucket_name=${SSM_BUCKET} ansible_python_interpreter=/usr/bin/python3 ansible_user=admin ansible_aws_ssm_timeout=60 ansible_aws_ssm_retries=5
+
+          [uc_ui]
+          foundation-dev ansible_host=${INSTANCE_ID} ansible_connection=community.aws.aws_ssm ansible_aws_ssm_region=us-east-2 ansible_aws_ssm_bucket_name=${SSM_BUCKET} ansible_python_interpreter=/usr/bin/python3 ansible_user=admin ansible_aws_ssm_timeout=60 ansible_aws_ssm_retries=5
+
+          [all:vars]
+          ansible_shell_type=sh
+          ansible_shell_executable=/bin/sh
+          EOF
+
+          echo "Inventory created for Instance ID: ${INSTANCE_ID} with SSM bucket: ${SSM_BUCKET}"
+          cat wazo-ansible/inventories/uc-engine
+
+      - name: Wait for SSM Agent
+        run: |
+          INSTANCE_ID="${{ needs.terraform-apply.outputs.instance_id }}"
+
+          echo "Waiting for SSM agent to be ready on instance ${INSTANCE_ID}..."
+          for i in {1..45}; do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+              --query "InstanceInformationList[0].PingStatus" \
+              --output text \
+              --region ${{ env.AWS_REGION }} || echo "NotFound")
+
+            if [ "$STATUS" = "Online" ]; then
+              echo "SSM agent is online!"
+              echo "Waiting additional 30 seconds for SSM to stabilize..."
+              sleep 30
+              break
+            else
+              if [ $i -eq 45 ]; then
+                echo "SSM agent not ready after 45 attempts (15 minutes)"
+                exit 1
+              fi
+              echo "SSM agent status: ${STATUS}. Waiting... (attempt $i/45)"
+              sleep 20
+            fi
+          done
+
+      - name: Wait for system package manager to be ready
+        run: |
+          INSTANCE_ID="${{ needs.terraform-apply.outputs.instance_id }}"
+          echo "Waiting for apt/dpkg to be available on ${INSTANCE_ID}..."
+
+          # Send command to wait for apt/dpkg locks to be released
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["#!/bin/bash","echo \"Waiting for apt/dpkg locks to be released...\"","for i in {1..60}; do","  if ! sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && ! sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; then","    echo \"Package manager is ready\"","    exit 0","  fi","  echo \"Waiting for package manager (attempt $i/60)...\"","  sleep 10","done","echo \"Package manager still busy after 10 minutes\"","exit 1"]' \
+            --region ${{ env.AWS_REGION }} \
+            --output text \
+            --query 'Command.CommandId')
+
+          echo "Waiting for package manager readiness check (Command ID: $COMMAND_ID)..."
+
+          # Wait for command to complete
+          for i in {1..70}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${INSTANCE_ID}" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            if [ "$STATUS" = "Success" ]; then
+              echo "Package manager is ready!"
+              break
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+              echo "Package manager readiness check failed with status: $STATUS"
+              exit 1
+            fi
+
+            echo "Status: $STATUS (attempt $i/70)"
+            sleep 10
+          done
+
+      - name: Run Wazo Platform Ansible Playbook
+        run: |
+          cd wazo-ansible
+          export AWS_REGION=${{ env.AWS_REGION }}
+          export AWS_DEFAULT_REGION=${{ env.AWS_REGION }}
+
+          # Retry playbook up to 5 times if it fails
+          # The Wazo playbook is idempotent so retries are safe
+          MAX_ATTEMPTS=5
+          ATTEMPT=1
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Running Ansible playbook (attempt $ATTEMPT/$MAX_ATTEMPTS)..."
+
+            if ansible-playbook \
+              -i inventories/uc-engine \
+              uc-engine.yml \
+              --become \
+              --become-user=root \
+              -e "engine_api_configure_wizard=true" \
+              -e "engine_api_root_password=${{ secrets.WAZO_ROOT_PASSWORD }}" \
+              -e "api_client_name=api-client" \
+              -e "api_client_password=${{ secrets.WAZO_API_PASSWORD }}" \
+              -e "tenant_name=calldata" \
+              -vvv; then
+              echo "Ansible playbook completed successfully!"
+              exit 0
+            else
+              EXIT_CODE=$?
+              echo "Ansible playbook failed with exit code $EXIT_CODE"
+
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                # Increase wait time on each retry to allow services more time to stabilize
+                WAIT_TIME=$((60 + (ATTEMPT * 30)))
+                echo "Waiting $WAIT_TIME seconds before retry (attempt $ATTEMPT failed)..."
+                sleep $WAIT_TIME
+                ATTEMPT=$((ATTEMPT + 1))
+              else
+                echo "All retry attempts exhausted"
+                exit $EXIT_CODE
+              fi
+            fi
+          done
+
+      - name: Wait for Foundation Platform Services
+        run: |
+          FOUNDATION_IP="${{ needs.terraform-apply.outputs.foundation_ip }}"
+
+          echo "Waiting for Foundation Platform to start (this may take several minutes)..."
+          sleep 120
+
+      - name: Health Check
+        run: |
+          FOUNDATION_IP="${{ needs.terraform-apply.outputs.foundation_ip }}"
+
+          echo "Testing Foundation Platform web interface..."
+          # Retry health check up to 10 times
+          for i in {1..10}; do
+            if curl -k -f "https://${FOUNDATION_IP}"; then
+              echo "✓ Foundation Platform web interface is accessible!"
+              break
+            else
+              if [ $i -eq 10 ]; then
+                echo "Health check failed after 10 attempts"
+                exit 1
+              fi
+              echo "Waiting for Foundation Platform... (attempt $i/10)"
+              sleep 30
+            fi
+          done
+
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, ansible-deploy]
+    if: always()
+
+    steps:
+      - name: Deployment Status
+        run: |
+          echo "=================================================="
+          echo "CallData Foundation Platform Deployment Summary"
+          echo "=================================================="
+          echo ""
+          echo "✓ Infrastructure: ${{ needs.terraform-apply.result }}"
+          echo "✓ Configuration: ${{ needs.ansible-deploy.result }}"
+          echo ""
+          echo "Web Interface: https://${{ needs.terraform-apply.outputs.foundation_ip }}"
+          echo "API Endpoint: https://${{ needs.terraform-apply.outputs.foundation_ip }}/api"
+          echo "Instance ID: ${{ needs.terraform-apply.outputs.instance_id }}"
+          echo ""
+          echo "Next Steps:"
+          echo "1. Access the web interface and log in with root credentials"
+          echo "2. Configure SIP trunks and extensions"
+          echo "3. Set up users and telephony features"
+          echo "4. Point SIP clients to: ${{ needs.terraform-apply.outputs.foundation_ip }}:5060"
+          echo ""
+          echo "=================================================="
+
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "::error::Deployment failed! Check logs above for details."
