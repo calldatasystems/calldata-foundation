@@ -9,8 +9,8 @@ Custom plugins for the Call Data Foundation (CDF) platform, extending Wazo UC ca
 | [call-distribution](./call-distribution/) | ~70% | Full ACD (Automatic Call Distribution) system with queue management, agent routing, supervisor tools, WebSocket real-time updates, and reporting APIs |
 | [call-survey](./call-survey/) | ~40% | Post-call survey system with Asterisk dialplan integration and webhook support |
 | [ivr-system](./ivr-system/) | ~70% | Multi-level IVR with DTMF menus, TTS support (Amazon Polly/local), business hours routing |
-| [ivr-boilerplate](./ivr-boilerplate/) | ~20% | Basic IVR boilerplate with mock Wazo clients for development |
-| [uc-custom](./uc-custom/) | ~30% | Custom IVR plugin with demo SIP server integration |
+| [ivr-system/uc-custom](./ivr-system/uc-custom/) | ~30% | Custom IVR plugin with demo SIP server integration |
+| [plugin-template](./plugin-template/) | ~20% | Basic plugin boilerplate with mock Wazo clients for development |
 
 ## Installation
 
@@ -28,7 +28,7 @@ cd /path/to/plugin
 pip install -e .
 ```
 
-### ivr-boilerplate / uc-custom
+### plugin-template / ivr-system/uc-custom
 Copy files to `/var/lib/wazo-provd/plugins/` and configure Asterisk dialplan.
 
 ## Development
@@ -40,8 +40,8 @@ plugins/
 ├── call-distribution/    # ACD/queue management
 ├── call-survey/          # Post-call surveys
 ├── ivr-system/           # IVR flow engine
-├── ivr-boilerplate/      # Development template
-└── uc-custom/            # Custom extensions
+│   └── uc-custom/        # Custom IVR extensions
+└── plugin-template/      # Development template
 ```
 
 ## Requirements
