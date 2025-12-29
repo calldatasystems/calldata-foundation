@@ -1,0 +1,36 @@
+{
+    "main_menu": {
+        "prompt": "Welcome to our automated service. Press 1 for sales, 2 for support, or 9 to repeat this menu.",
+        "options": {
+            "1": {
+                "action": "route_to_queue",
+                "target": "sales_queue"
+            },
+            "2": {
+                "action": "route_to_queue",
+                "target": "support_queue"
+            },
+            "9": {
+                "action": "repeat_menu"
+            }
+        },
+        "fallback": {
+            "action": "repeat_menu"
+        }
+    },
+    "sales_queue": {
+        "prompt": "Connecting you to sales. Please hold.",
+        "action": "transfer_to_extension",
+        "target": "1001"
+    },
+    "support_queue": {
+        "prompt": "Connecting you to support. Your call is important to us.",
+        "action": "transfer_to_extension",
+        "target": "1002"
+    },
+    "voicemail_menu": {
+        "prompt": "Our offices are currently closed. Please leave a message after the tone.",
+        "action": "transfer_to_extension",
+        "target": "voicemail_ext"
+    }
+}
