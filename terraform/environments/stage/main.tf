@@ -7,8 +7,8 @@ locals {
   region       = "us-east-2"
 
   # Instance configuration
-  instance_type    = "t3.xlarge"
-  root_volume_size = 100
+  instance_type    = "t3.large"   # 2 vCPU, 8GB RAM - sufficient for staging
+  root_volume_size = 50           # 50GB sufficient for Wazo + logs
 
   # Security - restrict SIP/RTP to specific IPs in production
   sip_allowed_cidrs = ["0.0.0.0/0"] # TODO: Restrict this
