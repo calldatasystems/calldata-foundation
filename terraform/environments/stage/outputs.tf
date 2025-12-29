@@ -16,8 +16,13 @@ output "foundation_public_ip" {
 }
 
 output "foundation_url" {
-  description = "URL to access the Foundation Platform"
+  description = "URL to access the Foundation Platform (IP-based)"
   value       = module.foundation.foundation_url
+}
+
+output "foundation_domain" {
+  description = "Domain URL to access the Foundation Platform"
+  value       = "https://stage.foundation.calldata.app"
 }
 
 output "security_group_id" {
