@@ -1,6 +1,6 @@
 # CallData Foundation Platform - Stage Environment
 # All-in-one deployment using cd-stg VPC
-# Trigger deployment: 2024-12-29
+# Trigger deployment: 2024-12-29 v2
 
 locals {
   project_name = "calldata-foundation"
