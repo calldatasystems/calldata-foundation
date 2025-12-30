@@ -96,52 +96,18 @@ build {
   name    = "wazo-foundation"
   sources = ["source.amazon-ebs.wazo"]
 
-  # Wait for cloud-init to complete and instance to be ready
+  # Simple test provisioner - just verify SSH works
   provisioner "shell" {
     inline = [
-      "echo '=== Packer provisioner starting ==='",
-      "echo 'Hostname:' $(hostname)",
-      "echo 'User:' $(whoami)",
-      "echo 'Working dir:' $(pwd)",
-      "echo 'Date:' $(date)",
-      "echo 'Waiting for cloud-init to complete...'",
-      "sudo cloud-init status --wait || echo 'cloud-init wait failed, continuing anyway'",
-      "echo 'Cloud-init complete, checking apt lock...'",
-      "while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do echo 'Waiting for apt lock...'; sleep 5; done",
-      "echo 'Apt lock released, system ready'",
-      "sleep 30"
+      "echo '=== TEST: SSH connected successfully ==='",
+      "whoami",
+      "id",
+      "uname -a",
+      "echo 'Testing sudo...'",
+      "sudo whoami",
+      "echo '=== TEST COMPLETE ==='",
+      "sleep 5"
     ]
-  }
-
-  # Base system setup
-  provisioner "shell" {
-    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
-    script = "scripts/01-base-setup.sh"
-    execute_command = "sudo -E bash -x '{{.Path}}'"
-  }
-
-  # Install Wazo platform
-  provisioner "shell" {
-    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
-    script = "scripts/02-install-wazo.sh"
-    execute_command = "sudo -E bash -x '{{.Path}}'"
-  }
-
-  # Configure Wazo
-  provisioner "shell" {
-    environment_vars = [
-      "WAZO_ROOT_PASSWORD=${var.wazo_root_password}",
-      "DEBIAN_FRONTEND=noninteractive"
-    ]
-    script = "scripts/04-configure-wazo.sh"
-    execute_command = "sudo -E bash -x '{{.Path}}'"
-  }
-
-  # Cleanup for AMI
-  provisioner "shell" {
-    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
-    script = "scripts/05-cleanup.sh"
-    execute_command = "sudo -E bash -x '{{.Path}}'"
   }
 
   post-processor "manifest" {
