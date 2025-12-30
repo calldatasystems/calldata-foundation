@@ -96,18 +96,22 @@ build {
   name    = "wazo-foundation"
   sources = ["source.amazon-ebs.wazo"]
 
-  # Simple test provisioner - just verify SSH works
+  # Wait for cloud-init and apt to be ready
   provisioner "shell" {
     inline = [
-      "echo '=== TEST: SSH connected successfully ==='",
-      "whoami",
-      "id",
-      "uname -a",
-      "echo 'Testing sudo...'",
-      "sudo whoami",
-      "echo '=== TEST COMPLETE ==='",
-      "sleep 5"
+      "echo '=== Waiting for cloud-init ==='",
+      "sudo cloud-init status --wait || true",
+      "echo '=== Waiting for apt lock ==='",
+      "while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do echo 'Waiting for apt lock...'; sleep 5; done",
+      "echo '=== System ready ===' "
     ]
+  }
+
+  # Test: Just run base setup first
+  provisioner "shell" {
+    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
+    script = "scripts/01-base-setup.sh"
+    execute_command = "sudo -E bash '{{.Path}}'"
   }
 
   post-processor "manifest" {
