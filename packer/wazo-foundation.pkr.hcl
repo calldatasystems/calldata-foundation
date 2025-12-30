@@ -107,10 +107,17 @@ build {
     ]
   }
 
-  # Test: Just run base setup first
+  # Base system setup
   provisioner "shell" {
     environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
     script = "scripts/01-base-setup.sh"
+    execute_command = "sudo -E bash '{{.Path}}'"
+  }
+
+  # Install Wazo platform
+  provisioner "shell" {
+    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
+    script = "scripts/02-install-wazo.sh"
     execute_command = "sudo -E bash '{{.Path}}'"
   }
 
