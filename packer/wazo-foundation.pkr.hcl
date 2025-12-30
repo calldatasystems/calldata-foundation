@@ -68,7 +68,9 @@ source "amazon-ebs" "wazo" {
     owners      = ["136693071363"] # Official Debian
   }
 
-  ssh_username = "admin"
+  ssh_username         = "admin"
+  ssh_timeout          = "10m"
+  ssh_handshake_attempts = 100
 
   launch_block_device_mappings {
     device_name           = "/dev/xvda"
@@ -94,19 +96,14 @@ build {
   name    = "wazo-foundation"
   sources = ["source.amazon-ebs.wazo"]
 
-  # Wait for cloud-init to complete
+  # Wait for cloud-init to complete and instance to be ready
   provisioner "shell" {
     inline = [
-      "echo 'Waiting for cloud-init...'",
+      "echo 'Waiting for cloud-init to complete...'",
       "cloud-init status --wait || true",
-      "sleep 30"
+      "echo 'Cloud-init complete, waiting for system to stabilize...'",
+      "sleep 60"
     ]
-  }
-
-  # Copy installation scripts
-  provisioner "file" {
-    source      = "scripts/"
-    destination = "/tmp/"
   }
 
   # Run Wazo installation (plugins installed separately for testing)
