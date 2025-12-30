@@ -99,26 +99,49 @@ build {
   # Wait for cloud-init to complete and instance to be ready
   provisioner "shell" {
     inline = [
+      "echo '=== Packer provisioner starting ==='",
+      "echo 'Hostname:' $(hostname)",
+      "echo 'User:' $(whoami)",
+      "echo 'Working dir:' $(pwd)",
+      "echo 'Date:' $(date)",
       "echo 'Waiting for cloud-init to complete...'",
-      "cloud-init status --wait || true",
-      "echo 'Cloud-init complete, waiting for system to stabilize...'",
-      "sleep 60"
+      "sudo cloud-init status --wait || echo 'cloud-init wait failed, continuing anyway'",
+      "echo 'Cloud-init complete, checking apt lock...'",
+      "while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do echo 'Waiting for apt lock...'; sleep 5; done",
+      "echo 'Apt lock released, system ready'",
+      "sleep 30"
     ]
   }
 
-  # Run Wazo installation (plugins installed separately for testing)
+  # Base system setup
+  provisioner "shell" {
+    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
+    script = "scripts/01-base-setup.sh"
+    execute_command = "sudo -E bash -x '{{.Path}}'"
+  }
+
+  # Install Wazo platform
+  provisioner "shell" {
+    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
+    script = "scripts/02-install-wazo.sh"
+    execute_command = "sudo -E bash -x '{{.Path}}'"
+  }
+
+  # Configure Wazo
   provisioner "shell" {
     environment_vars = [
       "WAZO_ROOT_PASSWORD=${var.wazo_root_password}",
       "DEBIAN_FRONTEND=noninteractive"
     ]
-    scripts = [
-      "scripts/01-base-setup.sh",
-      "scripts/02-install-wazo.sh",
-      "scripts/04-configure-wazo.sh",
-      "scripts/05-cleanup.sh"
-    ]
-    execute_command = "sudo -E bash '{{.Path}}'"
+    script = "scripts/04-configure-wazo.sh"
+    execute_command = "sudo -E bash -x '{{.Path}}'"
+  }
+
+  # Cleanup for AMI
+  provisioner "shell" {
+    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
+    script = "scripts/05-cleanup.sh"
+    execute_command = "sudo -E bash -x '{{.Path}}'"
   }
 
   post-processor "manifest" {
