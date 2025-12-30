@@ -1,40 +1,35 @@
 #!/bin/bash
-set -e
+set -ex
 
 echo "=== Installing Wazo Platform ==="
 
-# Add Wazo repository
-wget -O - https://mirror.wazo.community/wazo-platform.gpg | gpg --dearmor -o /usr/share/keyrings/wazo-platform.gpg
-echo "deb [signed-by=/usr/share/keyrings/wazo-platform.gpg] https://mirror.wazo.community/debian wazo-dev-bookworm main" > /etc/apt/sources.list.d/wazo-platform.list
+# Add Wazo repository key
+echo "Adding Wazo repository..."
+mkdir -p /usr/share/keyrings
+wget -q -O - https://mirror.wazo.community/wazo_current.key | gpg --dearmor > /usr/share/keyrings/wazo-keyring.gpg
 
+# Add Wazo repository (using pelican-bookworm for Debian 12)
+echo "deb [signed-by=/usr/share/keyrings/wazo-keyring.gpg] http://mirror.wazo.community/debian/pelican-bookworm pelican-bookworm main" > /etc/apt/sources.list.d/wazo.list
+
+echo "Updating package lists..."
 apt-get update
 
-# Install Wazo platform (all-in-one)
+# Install Wazo platform
+echo "Installing wazo-platform (this will take 10-15 minutes)..."
 apt-get install -y wazo-platform
 
 # Wait for services to initialize
-sleep 30
+echo "Waiting for services to initialize..."
+sleep 60
 
 # Install wazo-ui
+echo "Installing wazo-ui..."
 apt-get install -y wazo-ui
 
-# Ensure all services are enabled
-systemctl enable postgresql@15-main
-systemctl enable asterisk
-systemctl enable nginx
-systemctl enable wazo-auth
-systemctl enable wazo-confd
-systemctl enable wazo-calld
-systemctl enable wazo-dird
-systemctl enable wazo-agentd
-systemctl enable wazo-amid
-systemctl enable wazo-call-logd
-systemctl enable wazo-chatd
-systemctl enable wazo-phoned
-systemctl enable wazo-plugind
-systemctl enable wazo-provd
-systemctl enable wazo-webhookd
-systemctl enable wazo-websocketd
-systemctl enable wazo-ui
+# Enable key services (using || true to avoid failures if service doesn't exist)
+echo "Enabling services..."
+for svc in postgresql asterisk nginx wazo-auth wazo-confd wazo-calld wazo-dird wazo-agentd wazo-amid wazo-call-logd wazo-chatd wazo-phoned wazo-plugind wazo-provd wazo-webhookd wazo-websocketd wazo-ui; do
+    systemctl enable $svc 2>/dev/null || true
+done
 
 echo "=== Wazo Platform Installed ==="
