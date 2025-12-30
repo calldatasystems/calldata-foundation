@@ -20,6 +20,18 @@ variable "instance_type" {
   default = "t3.large"
 }
 
+variable "vpc_id" {
+  type        = string
+  description = "VPC ID for Packer builder instance"
+  default     = "vpc-07d54189eee51b854" # cd-stg VPC
+}
+
+variable "subnet_id" {
+  type        = string
+  description = "Subnet ID for Packer builder instance (must be public)"
+  default     = "subnet-0605a0a4734c13dd7" # cd-stg public subnet
+}
+
 variable "ami_name_prefix" {
   type    = string
   default = "calldata-foundation-wazo"
@@ -40,6 +52,11 @@ source "amazon-ebs" "wazo" {
   ami_description = "CallData Foundation Platform - Wazo UC with IVR plugins"
   instance_type   = var.instance_type
   region          = var.aws_region
+
+  # VPC and subnet configuration (no default VPC in us-east-2)
+  vpc_id                      = var.vpc_id
+  subnet_id                   = var.subnet_id
+  associate_public_ip_address = true
 
   source_ami_filter {
     filters = {
