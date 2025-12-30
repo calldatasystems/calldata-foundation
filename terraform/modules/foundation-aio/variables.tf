@@ -71,3 +71,15 @@ variable "hosted_zone_id" {
   type        = string
   default     = ""
 }
+
+variable "custom_ami_id" {
+  description = "Custom AMI ID with Wazo pre-installed. If empty, uses latest Debian and installs via Ansible."
+  type        = string
+  default     = ""
+}
+
+variable "use_custom_ami" {
+  description = "Whether to use custom AMI (true) or base Debian with Ansible (false)"
+  type        = bool
+  default     = false
+}

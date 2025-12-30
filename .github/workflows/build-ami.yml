@@ -1,0 +1,84 @@
+name: Build Wazo Foundation AMI
+
+on:
+  workflow_dispatch:
+    inputs:
+      wazo_root_password:
+        description: 'Root password for Wazo admin user'
+        required: true
+        default: 'P@ssw0rd'
+  push:
+    branches:
+      - main
+    paths:
+      - 'packer/**'
+      - 'plugins/ivr-system/**'
+
+env:
+  AWS_REGION: us-east-2
+  PACKER_VERSION: 1.10.0
+
+jobs:
+  build-ami:
+    name: Build AMI with Packer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Initialize Packer
+        working-directory: packer
+        run: packer init wazo-foundation.pkr.hcl
+
+      - name: Validate Packer template
+        working-directory: packer
+        run: packer validate wazo-foundation.pkr.hcl
+
+      - name: Build AMI
+        working-directory: packer
+        env:
+          PKR_VAR_wazo_root_password: ${{ github.event.inputs.wazo_root_password || secrets.WAZO_ROOT_PASSWORD }}
+        run: |
+          packer build -color=false wazo-foundation.pkr.hcl
+
+      - name: Extract AMI ID
+        id: ami
+        working-directory: packer
+        run: |
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d: -f2)
+          echo "ami_id=${AMI_ID}" >> $GITHUB_OUTPUT
+          echo "AMI ID: ${AMI_ID}"
+
+      - name: Update SSM Parameter with AMI ID
+        run: |
+          aws ssm put-parameter \
+            --name "/calldata-foundation/ami-id" \
+            --value "${{ steps.ami.outputs.ami_id }}" \
+            --type String \
+            --overwrite
+
+      - name: Build Summary
+        run: |
+          echo "## AMI Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**AMI ID:** \`${{ steps.ami.outputs.ami_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Included Components" >> $GITHUB_STEP_SUMMARY
+          echo "- Wazo Platform (latest)" >> $GITHUB_STEP_SUMMARY
+          echo "- Wazo UI" >> $GITHUB_STEP_SUMMARY
+          echo "- IVR System Plugin" >> $GITHUB_STEP_SUMMARY
+          echo "- SSM Agent" >> $GITHUB_STEP_SUMMARY

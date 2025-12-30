@@ -187,7 +187,7 @@ resource "aws_iam_role_policy" "ssm_s3" {
 
 # Foundation Platform Server Instance
 resource "aws_instance" "foundation" {
-  ami                    = data.aws_ami.debian_bookworm.id
+  ami                    = var.use_custom_ami ? var.custom_ami_id : data.aws_ami.debian_bookworm.id
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.foundation.id]
