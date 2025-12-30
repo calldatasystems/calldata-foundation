@@ -92,7 +92,7 @@ build {
     destination = "/tmp/"
   }
 
-  # Run Wazo installation
+  # Run Wazo installation (plugins installed separately for testing)
   provisioner "shell" {
     environment_vars = [
       "WAZO_ROOT_PASSWORD=${var.wazo_root_password}",
@@ -101,7 +101,6 @@ build {
     scripts = [
       "scripts/01-base-setup.sh",
       "scripts/02-install-wazo.sh",
-      "scripts/03-install-plugins.sh",
       "scripts/04-configure-wazo.sh",
       "scripts/05-cleanup.sh"
     ]
