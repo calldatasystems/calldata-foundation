@@ -11,12 +11,12 @@ output "foundation_private_ip" {
 }
 
 output "foundation_public_ip" {
-  description = "Public Elastic IP address"
+  description = "Public Elastic IP address (for SIP traffic)"
   value       = module.foundation.elastic_ip
 }
 
 output "foundation_url" {
-  description = "URL to access the Foundation Platform (IP-based)"
+  description = "URL to access the Foundation Platform"
   value       = module.foundation.foundation_url
 }
 
@@ -48,4 +48,20 @@ output "vpc_id" {
 output "subnet_id" {
   description = "ID of the subnet used"
   value       = tolist(data.aws_subnets.stage_public.ids)[0]
+}
+
+# ALB outputs
+output "alb_dns_name" {
+  description = "DNS name of the Application Load Balancer"
+  value       = module.foundation.alb_dns_name
+}
+
+output "alb_arn" {
+  description = "ARN of the Application Load Balancer"
+  value       = module.foundation.alb_arn
+}
+
+output "target_group_arn" {
+  description = "ARN of the ALB target group"
+  value       = module.foundation.target_group_arn
 }

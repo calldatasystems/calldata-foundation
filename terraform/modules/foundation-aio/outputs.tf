@@ -35,5 +35,25 @@ output "iam_role_name" {
 
 output "foundation_url" {
   description = "URL to access the Foundation Platform"
-  value       = "https://${var.allocate_eip ? aws_eip.foundation[0].public_ip : aws_instance.foundation.public_ip}"
+  value       = var.enable_alb ? "https://${var.domain_name}" : "https://${var.allocate_eip ? aws_eip.foundation[0].public_ip : aws_instance.foundation.public_ip}"
+}
+
+output "alb_dns_name" {
+  description = "DNS name of the ALB (if enabled)"
+  value       = var.enable_alb ? aws_lb.foundation[0].dns_name : null
+}
+
+output "alb_arn" {
+  description = "ARN of the ALB (if enabled)"
+  value       = var.enable_alb ? aws_lb.foundation[0].arn : null
+}
+
+output "target_group_arn" {
+  description = "ARN of the target group (if ALB enabled)"
+  value       = var.enable_alb ? aws_lb_target_group.foundation[0].arn : null
+}
+
+output "acm_certificate_arn" {
+  description = "ARN of the ACM certificate (if ALB enabled)"
+  value       = var.enable_alb ? aws_acm_certificate.foundation[0].arn : null
 }

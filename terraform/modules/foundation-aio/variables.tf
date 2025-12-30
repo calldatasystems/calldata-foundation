@@ -47,3 +47,27 @@ variable "rtp_allowed_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "enable_alb" {
+  description = "Enable Application Load Balancer for scalability"
+  type        = bool
+  default     = false
+}
+
+variable "alb_subnet_ids" {
+  description = "List of subnet IDs for ALB (requires at least 2 AZs)"
+  type        = list(string)
+  default     = []
+}
+
+variable "domain_name" {
+  description = "Domain name for ACM certificate (e.g., stage.foundation.calldata.app)"
+  type        = string
+  default     = ""
+}
+
+variable "hosted_zone_id" {
+  description = "Route 53 hosted zone ID for DNS validation"
+  type        = string
+  default     = ""
+}

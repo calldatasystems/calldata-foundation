@@ -285,9 +285,9 @@ resource "aws_eip" "foundation" {
   }
 }
 
-# Associate EIP with instance
+# Associate EIP with instance (only when ALB is disabled)
 resource "aws_eip_association" "foundation" {
-  count         = var.allocate_eip ? 1 : 0
+  count         = var.allocate_eip && !var.enable_alb ? 1 : 0
   instance_id   = aws_instance.foundation.id
   allocation_id = aws_eip.foundation[0].id
 
@@ -295,4 +295,188 @@ resource "aws_eip_association" "foundation" {
     aws_instance.foundation,
     aws_eip.foundation
   ]
+}
+
+# =============================================================================
+# Application Load Balancer Resources (when enable_alb = true)
+# =============================================================================
+
+# ACM Certificate for HTTPS
+resource "aws_acm_certificate" "foundation" {
+  count             = var.enable_alb ? 1 : 0
+  domain_name       = var.domain_name
+  validation_method = "DNS"
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-cert"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# DNS validation record for ACM
+resource "aws_route53_record" "cert_validation" {
+  for_each = var.enable_alb ? {
+    for dvo in aws_acm_certificate.foundation[0].domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = var.hosted_zone_id
+}
+
+# ACM certificate validation
+resource "aws_acm_certificate_validation" "foundation" {
+  count                   = var.enable_alb ? 1 : 0
+  certificate_arn         = aws_acm_certificate.foundation[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
+}
+
+# ALB Security Group
+resource "aws_security_group" "alb" {
+  count       = var.enable_alb ? 1 : 0
+  name        = "${var.project_name}-${var.environment}-alb-sg"
+  description = "Security group for Foundation Platform ALB"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Allow all outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-alb-sg"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Application Load Balancer
+resource "aws_lb" "foundation" {
+  count              = var.enable_alb ? 1 : 0
+  name               = "${var.project_name}-${var.environment}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb[0].id]
+  subnets            = var.alb_subnet_ids
+
+  enable_deletion_protection = false
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-alb"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Target Group for EC2 instances
+resource "aws_lb_target_group" "foundation" {
+  count    = var.enable_alb ? 1 : 0
+  name     = "${var.project_name}-${var.environment}-tg"
+  port     = 443
+  protocol = "HTTPS"
+  vpc_id   = var.vpc_id
+
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    interval            = 30
+    matcher             = "200,302"
+    path                = "/"
+    port                = "traffic-port"
+    protocol            = "HTTPS"
+    timeout             = 5
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-tg"
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
+# Register EC2 instance with target group
+resource "aws_lb_target_group_attachment" "foundation" {
+  count            = var.enable_alb ? 1 : 0
+  target_group_arn = aws_lb_target_group.foundation[0].arn
+  target_id        = aws_instance.foundation.id
+  port             = 443
+}
+
+# HTTPS Listener
+resource "aws_lb_listener" "https" {
+  count             = var.enable_alb ? 1 : 0
+  load_balancer_arn = aws_lb.foundation[0].arn
+  port              = "443"
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate_validation.foundation[0].certificate_arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.foundation[0].arn
+  }
+}
+
+# HTTP Listener (redirect to HTTPS)
+resource "aws_lb_listener" "http" {
+  count             = var.enable_alb ? 1 : 0
+  load_balancer_arn = aws_lb.foundation[0].arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+# DNS Record pointing to ALB
+resource "aws_route53_record" "foundation_alb" {
+  count   = var.enable_alb ? 1 : 0
+  zone_id = var.hosted_zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.foundation[0].dns_name
+    zone_id                = aws_lb.foundation[0].zone_id
+    evaluate_target_health = true
+  }
 }
