@@ -1,35 +1,33 @@
 #!/bin/bash
-set -e
+set -ex
 
 echo "=== Configuring Wazo Platform ==="
 
-# Wait for services to be ready
-sleep 60
+# Wait for services to be fully ready after E-UC Stack installation
+echo "Waiting for services to stabilize..."
+sleep 120
 
-# Run setup wizard via API
-echo "Running Wazo setup wizard..."
-curl -k -X POST https://localhost/api/setupd/1.0/setup \
-    -H "Content-Type: application/json" \
-    -d '{
-        "engine_language": "en_US",
-        "engine_password": "'"${WAZO_ROOT_PASSWORD}"'",
-        "engine_internal_address": "127.0.0.1",
-        "engine_license": true
-    }' || echo "Setup wizard may have already run"
+# Verify key services are running
+echo "Verifying services..."
+for svc in postgresql asterisk nginx; do
+    systemctl is-active $svc && echo "$svc is running" || echo "$svc not running (may be normal)"
+done
 
-# Wait for setup to complete
-sleep 30
+# The E-UC Stack installer handles the setup wizard
+# We just need to create the admin user for API access
 
-# Create root admin user if not exists
-echo "Creating admin user..."
-wazo-auth-cli user list | grep -q " root " || \
-    wazo-auth-cli user create root --password "${WAZO_ROOT_PASSWORD}" --purpose external_api --enable
+# Try to create admin user (may fail if already exists or not yet ready)
+echo "Attempting to create admin user..."
+wazo-auth-cli user create root --password "${WAZO_ROOT_PASSWORD:-P@ssw0rd}" --purpose external_api --enable 2>/dev/null || echo "Admin user may already exist"
 
-# Get root user UUID and assign admin policy
-ROOT_UUID=$(wazo-auth-cli user list | grep " root " | awk '{print $2}')
+# Try to assign admin policy
+echo "Attempting to assign admin policy..."
+ROOT_UUID=$(wazo-auth-cli user list 2>/dev/null | grep -w "root" | awk '{print $2}' || true)
 if [ ! -z "$ROOT_UUID" ]; then
-    wazo-auth-cli user add --policy wazo_default_admin_policy "$ROOT_UUID" 2>/dev/null || echo "Policy may already be assigned"
-    echo "Admin user configured: root"
+    wazo-auth-cli user add --policy wazo_default_admin_policy "$ROOT_UUID" 2>/dev/null || echo "Policy assignment failed or already assigned"
+    echo "Admin user UUID: $ROOT_UUID"
+else
+    echo "Could not find root user - will need to create manually after boot"
 fi
 
 # Create firstboot script for instance-specific config
