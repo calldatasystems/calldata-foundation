@@ -121,6 +121,23 @@ build {
     execute_command = "sudo -E bash '{{.Path}}'"
   }
 
+  # Configure Wazo (setup wizard, admin user)
+  provisioner "shell" {
+    environment_vars = [
+      "WAZO_ROOT_PASSWORD=${var.wazo_root_password}",
+      "DEBIAN_FRONTEND=noninteractive"
+    ]
+    script = "scripts/04-configure-wazo.sh"
+    execute_command = "sudo -E bash '{{.Path}}'"
+  }
+
+  # Cleanup for AMI imaging
+  provisioner "shell" {
+    environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
+    script = "scripts/05-cleanup.sh"
+    execute_command = "sudo -E bash '{{.Path}}'"
+  }
+
   post-processor "manifest" {
     output     = "manifest.json"
     strip_path = true
