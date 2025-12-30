@@ -1,3 +1,6 @@
+# Wazo Foundation Platform AMI Builder
+# Trigger build: 2024-12-29
+
 packer {
   required_plugins {
     amazon = {
